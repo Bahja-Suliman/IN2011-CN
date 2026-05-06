@@ -744,66 +744,84 @@ public class Node implements NodeInterface {
 
         learnNearest(key);
 
-        // pick a node
-        String address = nodeAddresses.values().iterator().next();
-        String[] parts = address.split(":");
-        String ip = parts[0];
-        int port = Integer.parseInt(parts[1]);
+        for (String address : nodeAddresses.values()) {
 
-        String txid = nextTxID();
-        String request = txid + " W " + encodeString(key) + encodeString(value);
+            String[] parts = address.split(":");
+            String ip = parts[0];
+            int port = Integer.parseInt(parts[1]);
 
-        byte[] out = request.getBytes(StandardCharsets.UTF_8);
-        DatagramPacket packet = new DatagramPacket(
-                out,
-                out.length,
-                java.net.InetAddress.getByName(ip),
-                port
-        );
+            String txid = nextTxID();
+            String request = txid + " W " +
+                    encodeString(key) +
+                    encodeString(value);
 
+            byte[] out = request.getBytes(StandardCharsets.UTF_8);
 
-        // wait for response
-        byte[] buffer = new byte[4096];
-        DatagramPacket responsePacket = new DatagramPacket(buffer, buffer.length);
+            DatagramPacket packet = new DatagramPacket(
+                    out,
+                    out.length,
+                    java.net.InetAddress.getByName(ip),
+                    port
+            );
 
-        socket.setSoTimeout(5000);
+            socket.setSoTimeout(500);
 
-        for (int attempt = 0; attempt < 3; attempt++) {
-            System.out.println("Write attempt: " + (attempt + 1));
-            sendWithRelay(packet);
+            for (int attempt = 0; attempt < 3; attempt++) {
 
-            try {
-                socket.receive(responsePacket);
+                System.out.println("Write attempt: " + (attempt + 1));
 
-                String response = new String(
-                        responsePacket.getData(),
-                        0,
-                        responsePacket.getLength(),
-                        StandardCharsets.UTF_8
-                );
+                sendWithRelay(packet);
 
-                System.out.println("Write response: [" + response + "]");
+                long endTime = System.currentTimeMillis() + 5000;
 
-                if (response.length() >= 6 && response.substring(0, 2).equals(txid)
-                        && response.substring(2, 5).equals(" X ")) {
+                while (System.currentTimeMillis() < endTime) {
 
-                    char code = response.charAt(5);
-                    if (code == 'A' || code == 'R') {
-                        return true;
+                    byte[] buffer = new byte[4096];
+                    DatagramPacket responsePacket =
+                            new DatagramPacket(buffer, buffer.length);
+
+                    try {
+                        socket.receive(responsePacket);
+                    } catch (SocketTimeoutException e) {
+                        continue;
                     }
 
-                    if (code == 'X') {
-                        return false;
+                    String response = new String(
+                            responsePacket.getData(),
+                            0,
+                            responsePacket.getLength(),
+                            StandardCharsets.UTF_8
+                    );
+
+                    System.out.println("Write response: [" + response + "]");
+
+                    // ignore unrelated packets
+                    if (!response.startsWith(txid)) {
+                        continue;
+                    }
+
+                    if (response.length() >= 6 &&
+                            response.substring(2, 5).equals(" X ")) {
+
+                        char code = response.charAt(5);
+
+                        if (code == 'A' || code == 'R') {
+                            return true;
+                        }
+
+                        if (code == 'X') {
+                            break;
+                        }
                     }
                 }
+            }
 
-            } catch (SocketTimeoutException e) {
-                    System.out.println("Write timeout, retrying...");
-                }
+            Thread.sleep(500);
         }
 
         return false;
     }
+    
     private int txCounter = 0;
     private String nextTxID() {
         int id = txCounter++;
