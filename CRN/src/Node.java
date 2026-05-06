@@ -307,7 +307,7 @@ public class Node implements NodeInterface {
 
                 socket.send(forward);
             }
-            
+
             if (message.length() >= 4 && message.substring(2, 4).equals(" N")) {
                 String txid = message.substring(0, 2);
 
@@ -561,6 +561,93 @@ public class Node implements NodeInterface {
 
         return false;
     }
+    private String hashHex(String key) throws Exception {
+        byte[] hash = HashID.computeHashID(key);
+        StringBuilder sb = new StringBuilder();
+
+        for (byte b : hash) {
+            sb.append(String.format("%02x", b & 0xff));
+        }
+
+        return sb.toString();
+    }
+
+    private void learnNearest(String key) throws Exception {
+        if (nodeAddresses.isEmpty()) {
+            return;
+        }
+
+        String hash = hashHex(key);
+
+        java.util.ArrayList<String> addresses =
+                new java.util.ArrayList<>(nodeAddresses.values());
+
+        for (String address : addresses) {
+            String[] parts = address.split(":");
+            String ip = parts[0];
+            int port = Integer.parseInt(parts[1]);
+
+            String txid = nextTxID();
+            String request = txid + " N " + hash;
+
+            byte[] out = request.getBytes(StandardCharsets.UTF_8);
+
+            DatagramPacket packet = new DatagramPacket(
+                    out,
+                    out.length,
+                    java.net.InetAddress.getByName(ip),
+                    port
+            );
+
+            socket.setSoTimeout(500);
+
+            socket.send(packet);
+
+            long endTime = System.currentTimeMillis() + 2000;
+
+            while (System.currentTimeMillis() < endTime) {
+                byte[] buffer = new byte[4096];
+                DatagramPacket responsePacket =
+                        new DatagramPacket(buffer, buffer.length);
+
+                try {
+                    socket.receive(responsePacket);
+                } catch (SocketTimeoutException e) {
+                    continue;
+                }
+
+                String response = new String(
+                        responsePacket.getData(),
+                        0,
+                        responsePacket.getLength(),
+                        StandardCharsets.UTF_8
+                );
+
+                if (!response.startsWith(txid)) {
+                    continue;
+                }
+
+                if (response.length() >= 4 &&
+                        response.substring(2, 4).equals(" O")) {
+
+                    int index = 5;
+
+                    while (index < response.length()) {
+                        ParsedString nodePart = decodeString(response, index);
+                        ParsedString addrPart = decodeString(response, nodePart.nextIndex);
+
+                        nodeAddresses.put(nodePart.value, addrPart.value);
+
+                        index = addrPart.nextIndex;
+                    }
+
+                    return;
+                }
+            }
+        }
+    }
+
+
 
     public String read(String key) throws Exception {
         if (store.containsKey(key)) {
@@ -570,6 +657,7 @@ public class Node implements NodeInterface {
         if (nodeAddresses.isEmpty()) {
             return null;
         }
+        learnNearest(key);
 
         for (String address : nodeAddresses.values()) {
             String[] parts = address.split(":");
@@ -653,6 +741,8 @@ public class Node implements NodeInterface {
             store.put(key, value);
             return true;
         }
+
+        learnNearest(key);
 
         // pick a node
         String address = nodeAddresses.values().iterator().next();
