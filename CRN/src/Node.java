@@ -534,6 +534,7 @@ public class Node implements NodeInterface {
     }
 
     public String read(String key) throws Exception {
+
         if (store.containsKey(key)) {
             return store.get(key);
         }
@@ -542,57 +543,69 @@ public class Node implements NodeInterface {
             return null;
         }
 
-        String address = nodeAddresses.values().iterator().next();
-        String[] parts = address.split(":");
-        String ip = parts[0];
-        int port = Integer.parseInt(parts[1]);
+        for (String address : nodeAddresses.values()) {
 
-        String txid = nextTxID();
-        String request = txid + " R " + encodeString(key);
+            String[] parts = address.split(":");
+            String ip = parts[0];
+            int port = Integer.parseInt(parts[1]);
 
-        byte[] out = request.getBytes(StandardCharsets.UTF_8);
-        DatagramPacket packet = new DatagramPacket(
-                out,
-                out.length,
-                java.net.InetAddress.getByName(ip),
-                port
-        );
+            String txid = nextTxID();
+            String request = txid + " R " + encodeString(key);
 
+            byte[] out = request.getBytes(StandardCharsets.UTF_8);
 
-        byte[] buffer = new byte[4096];
-        DatagramPacket responsePacket = new DatagramPacket(buffer, buffer.length);
+            DatagramPacket packet = new DatagramPacket(
+                    out,
+                    out.length,
+                    java.net.InetAddress.getByName(ip),
+                    port
+            );
 
-        socket.setSoTimeout(5000);
+            byte[] buffer = new byte[4096];
+            DatagramPacket responsePacket =
+                    new DatagramPacket(buffer, buffer.length);
 
-        for (int attempt = 0; attempt < 3; attempt++) {
+            socket.setSoTimeout(5000);
+
+            for (int attempt = 0; attempt < 3; attempt++) {
+
                 System.out.println("Read attempt: " + (attempt + 1));
-            sendWithRelay(packet);
 
-            try {
-                socket.receive(responsePacket);
+                sendWithRelay(packet);
 
-                String response = new String(
-                        responsePacket.getData(),
-                        0,
-                        responsePacket.getLength(),
-                        StandardCharsets.UTF_8
-                );
+                try {
+                    socket.receive(responsePacket);
 
-                System.out.println("Read response: [" + response + "]");
+                    String response = new String(
+                            responsePacket.getData(),
+                            0,
+                            responsePacket.getLength(),
+                            StandardCharsets.UTF_8
+                    );
 
-                if (response.length() >= 6 && response.substring(0, 2).equals(txid)
-                        && response.substring(2, 5).equals(" S ")) {
+                    System.out.println("Read response: [" + response + "]");
 
-                    char code = response.charAt(5);
+                    if (response.length() >= 6 &&
+                            response.substring(0, 2).equals(txid) &&
+                            response.substring(2, 5).equals(" S ")) {
 
-                    if (code == 'Y') {
-                        ParsedString valuePart = decodeString(response, 7);
-                        return valuePart.value;
+                        char code = response.charAt(5);
+
+                        if (code == '?') {
+                            break;
+                        }
+
+                        if (code == 'Y') {
+                            ParsedString valuePart =
+                                    decodeString(response, 7);
+
+                            return valuePart.value;
+                        }
                     }
-                }
 
-            } catch (SocketTimeoutException e) {
-                System.out.println("Read timeout, retrying...");
+                } catch (SocketTimeoutException e) {
+                    System.out.println("Read timeout, retrying...");
+                }
             }
         }
 
@@ -658,7 +671,13 @@ public class Node implements NodeInterface {
                         && response.substring(2, 5).equals(" X ")) {
 
                     char code = response.charAt(5);
-                    return (code == 'A' || code == 'R');
+                    if (code == 'A' || code == 'R') {
+                        return true;
+                    }
+
+                    if (code == 'X') {
+                        return false;
+                    }
                 }
 
             } catch (SocketTimeoutException e) {
