@@ -534,7 +534,6 @@ public class Node implements NodeInterface {
     }
 
     public String read(String key) throws Exception {
-
         if (store.containsKey(key)) {
             return store.get(key);
         }
@@ -544,7 +543,6 @@ public class Node implements NodeInterface {
         }
 
         for (String address : nodeAddresses.values()) {
-
             String[] parts = address.split(":");
             String ip = parts[0];
             int port = Integer.parseInt(parts[1]);
@@ -553,7 +551,6 @@ public class Node implements NodeInterface {
             String request = txid + " R " + encodeString(key);
 
             byte[] out = request.getBytes(StandardCharsets.UTF_8);
-
             DatagramPacket packet = new DatagramPacket(
                     out,
                     out.length,
@@ -561,20 +558,23 @@ public class Node implements NodeInterface {
                     port
             );
 
-            byte[] buffer = new byte[4096];
-            DatagramPacket responsePacket =
-                    new DatagramPacket(buffer, buffer.length);
-
-            socket.setSoTimeout(5000);
+            socket.setSoTimeout(500);
 
             for (int attempt = 0; attempt < 3; attempt++) {
-
                 System.out.println("Read attempt: " + (attempt + 1));
-
                 sendWithRelay(packet);
 
-                try {
-                    socket.receive(responsePacket);
+                long endTime = System.currentTimeMillis() + 5000;
+
+                while (System.currentTimeMillis() < endTime) {
+                    byte[] buffer = new byte[4096];
+                    DatagramPacket responsePacket = new DatagramPacket(buffer, buffer.length);
+
+                    try {
+                        socket.receive(responsePacket);
+                    } catch (SocketTimeoutException e) {
+                        continue;
+                    }
 
                     String response = new String(
                             responsePacket.getData(),
@@ -585,28 +585,26 @@ public class Node implements NodeInterface {
 
                     System.out.println("Read response: [" + response + "]");
 
-                    if (response.length() >= 6 &&
-                            response.substring(0, 2).equals(txid) &&
-                            response.substring(2, 5).equals(" S ")) {
-
-                        char code = response.charAt(5);
-
-                        if (code == '?') {
-                            break;
-                        }
-
-                        if (code == 'Y') {
-                            ParsedString valuePart =
-                                    decodeString(response, 7);
-
-                            return valuePart.value;
-                        }
+                    if (!response.startsWith(txid)) {
+                        continue;
                     }
 
-                } catch (SocketTimeoutException e) {
-                    System.out.println("Read timeout, retrying...");
+                    if (response.length() >= 6 && response.substring(2, 5).equals(" S ")) {
+                        char code = response.charAt(5);
+
+                        if (code == 'Y') {
+                            ParsedString valuePart = decodeString(response, 7);
+                            return valuePart.value;
+                        }
+
+                        if (code == 'N' || code == '?') {
+                            break;
+                        }
+                    }
                 }
             }
+
+            Thread.sleep(500);
         }
 
         return null;
