@@ -307,6 +307,35 @@ public class Node implements NodeInterface {
 
                 socket.send(forward);
             }
+            
+            if (message.length() >= 4 && message.substring(2, 4).equals(" N")) {
+                String txid = message.substring(0, 2);
+
+                String response = txid + " O";
+
+                int count = 0;
+                for (String key : nodeAddresses.keySet()) {
+                    if (count >= 3) {
+                        break;
+                    }
+
+                    String value = nodeAddresses.get(key);
+                    response += " " + encodeString(key) + encodeString(value);
+                    count++;
+                }
+
+                byte[] out = response.getBytes(StandardCharsets.UTF_8);
+                DatagramPacket reply = new DatagramPacket(
+                        out,
+                        out.length,
+                        packet.getAddress(),
+                        packet.getPort()
+                );
+
+                socket.send(reply);
+
+                System.out.println("Sent nearest response: [" + response + "]");
+            }
 
             if (message.length() >= 4 && message.substring(2, 4).equals(" C")) {
                 String txid = message.substring(0, 2);
