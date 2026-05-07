@@ -89,13 +89,33 @@ public class Node implements NodeInterface {
 
     private String nodeName;
     private DatagramSocket socket;
+    private java.util.HashMap<String, String> store = new java.util.HashMap<>();
+    private java.util.HashMap<String, String> nodeAddresses = new java.util.HashMap<>();
+    private java.util.Stack<String> relayStack = new java.util.Stack<>();
+    private String myAddress;
 
     public void setNodeName(String nodeName) throws Exception {
+        if (!nodeName.startsWith("N:")) {
+            nodeName = "N:" + nodeName;
+        }
         this.nodeName = nodeName;
     }
 
     public void openPort(int portNumber) throws Exception {
         this.socket = new DatagramSocket(portNumber);
+
+        String ip;
+        try {
+            ip = java.net.InetAddress.getLocalHost().getHostAddress();
+        } catch (Exception e) {
+            ip = "127.0.0.1";
+        }
+
+        myAddress = ip + ":" + portNumber;
+
+        if (nodeName != null) {
+            nodeAddresses.put(nodeName, myAddress);
+        }
     }
 
     private static class ParsedString {
@@ -126,8 +146,14 @@ public class Node implements NodeInterface {
             pos++;
         }
 
-        int valueEnd = message.indexOf(' ', pos);
-        if (valueEnd == -1) {
+        int valueEnd = pos;
+
+        while (valueEnd < message.length()
+                && message.charAt(valueEnd) != ' ') {
+            valueEnd++;
+        }
+
+        if (valueEnd >= message.length()) {
             throw new Exception("Bad CRN string: missing final space");
         }
 
@@ -145,8 +171,7 @@ public class Node implements NodeInterface {
         while (true) {
 
             if (delay != 0 && System.currentTimeMillis() - startTime >= delay) {
-                System.out.println("handleIncomingMessages timeout reached");
-                return;
+               return;
             }
 
             byte[] buffer = new byte[4096];
@@ -175,9 +200,11 @@ public class Node implements NodeInterface {
 
                 String response;
                 if (store.containsKey(key)) {
-                    response = txid + " F Y";
+                    response = txid + " F Y ";
+                } else if (isResponsibleFor(key)) {
+                    response = txid + " F N ";
                 } else {
-                    response = txid + " F N";
+                    response = txid + " F ? ";
                 }
 
                 byte[] out = response.getBytes(StandardCharsets.UTF_8);
@@ -212,6 +239,7 @@ public class Node implements NodeInterface {
             }
 
             if (message.length() >= 4 && message.substring(2, 4).equals(" W")) {
+
                 String txid = message.substring(0, 2);
 
                 ParsedString keyPart = decodeString(message, 5);
@@ -221,21 +249,42 @@ public class Node implements NodeInterface {
                 String value = valuePart.value;
 
                 boolean replacing;
+                String response;
 
-                if (key.startsWith("N:")) {
+                if (!key.startsWith("D:") && !key.startsWith("N:")) {
+
+                    response = txid + " X X ";
+
+                } else if (key.startsWith("N:")) {
+
                     replacing = nodeAddresses.containsKey(key);
+
                     nodeAddresses.put(key, value);
+
+                    response = txid + (replacing ? " X R " : " X A ");
+
                 } else {
+
                     replacing = store.containsKey(key);
-                    store.put(key, value);
+                    if (replacing) {
+                        store.put(key, value);
+
+                        response = txid + " X R ";
+
+                    } else if (isResponsibleFor(key)) {
+
+                        store.put(key, value);
+
+                        response = txid + " X A ";
+
+                    } else {
+
+                        response = txid + " X X ";
+                    }
                 }
 
-                System.out.println("Stored nodes: " + nodeAddresses);
-
-                String code = replacing ? "R" : "A";
-                String response = txid + " X " + code;
-
                 byte[] out = response.getBytes(StandardCharsets.UTF_8);
+
                 DatagramPacket reply = new DatagramPacket(
                         out,
                         out.length,
@@ -259,8 +308,10 @@ public class Node implements NodeInterface {
                 String response;
                 if (store.containsKey(key)) {
                     response = txid + " S Y " + encodeString(store.get(key));
+                } else if (isResponsibleFor(key)) {
+                    response = txid + " S N ";
                 } else {
-                    response = txid + " S N";
+                    response = txid + " S ? ";
                 }
 
                 byte[] out = response.getBytes(StandardCharsets.UTF_8);
@@ -278,26 +329,31 @@ public class Node implements NodeInterface {
             }
 
             if (message.length() >= 4 && message.substring(2, 4).equals(" V")) {
+
+                String outerTxid = message.substring(0, 2);
+
                 ParsedString targetPart = decodeString(message, 5);
-                ParsedString innerPart = decodeString(message, targetPart.nextIndex);
 
                 String targetNode = targetPart.value;
-                String innerMessage = innerPart.value;
+
+                String innerMessage = message.substring(targetPart.nextIndex);
 
                 System.out.println("Relay target: [" + targetNode + "]");
                 System.out.println("Relaying: [" + innerMessage + "]");
 
                 String address = nodeAddresses.get(targetNode);
+
                 if (address == null) {
-                    System.out.println("Unknown relay target");
                     continue;
                 }
 
                 String[] parts = address.split(":");
+
                 String ip = parts[0];
                 int port = Integer.parseInt(parts[1]);
 
                 byte[] out = innerMessage.getBytes(StandardCharsets.UTF_8);
+
                 DatagramPacket forward = new DatagramPacket(
                         out,
                         out.length,
@@ -306,25 +362,79 @@ public class Node implements NodeInterface {
                 );
 
                 socket.send(forward);
+
+                socket.setSoTimeout(5000);
+
+                try {
+
+                    byte[] responseBuffer = new byte[4096];
+
+                    DatagramPacket responsePacket =
+                            new DatagramPacket(responseBuffer, responseBuffer.length);
+
+                    socket.receive(responsePacket);
+
+                    String response = new String(
+                            responsePacket.getData(),
+                            0,
+                            responsePacket.getLength(),
+                            StandardCharsets.UTF_8
+                    );
+
+                    if (response.length() >= 2) {
+
+                        String fixedResponse =
+                                outerTxid + response.substring(2);
+
+                        byte[] relayResponse =
+                                fixedResponse.getBytes(StandardCharsets.UTF_8);
+
+                        DatagramPacket back = new DatagramPacket(
+                                relayResponse,
+                                relayResponse.length,
+                                packet.getAddress(),
+                                packet.getPort()
+                        );
+
+                        socket.send(back);
+
+                        System.out.println("Relay response: [" + fixedResponse + "]");
+                    }
+
+                } catch (SocketTimeoutException e) {
+
+                    System.out.println("Relay timeout");
+                }
             }
 
             if (message.length() >= 4 && message.substring(2, 4).equals(" N")) {
                 String txid = message.substring(0, 2);
 
-                String response = txid + " O";
+                String hash = message.substring(5).trim();
+
+                String response = txid + " O ";
 
                 int count = 0;
-                for (String key : nodeAddresses.keySet()) {
+
+                for (String node : sortNodes(hash)) {
                     if (count >= 3) {
                         break;
                     }
 
-                    String value = nodeAddresses.get(key);
-                    response += " " + encodeString(key) + encodeString(value);
+                    String address = nodeAddresses.get(node);
+
+                    if (address == null) {
+                        continue;
+                    }
+
+                    response += encodeString(node);
+                    response += encodeString(address);
+
                     count++;
                 }
 
                 byte[] out = response.getBytes(StandardCharsets.UTF_8);
+
                 DatagramPacket reply = new DatagramPacket(
                         out,
                         out.length,
@@ -350,16 +460,20 @@ public class Node implements NodeInterface {
 
                 String response;
 
-                if (store.containsKey(key)) {
+                if (!key.startsWith("D:") && !key.startsWith("N:")) {
+                    response = txid + " D X ";
+                } else if (store.containsKey(key)) {
                     if (store.get(key).equals(currentValue)) {
                         store.put(key, newValue);
-                        response = txid + " D R";
+                        response = txid + " D R ";
                     } else {
-                        response = txid + " D N";
+                        response = txid + " D N ";
                     }
-                } else {
+                } else if (isResponsibleFor(key)) {
                     store.put(key, newValue);
-                    response = txid + " D A";
+                    response = txid + " D A ";
+                } else {
+                    response = txid + " D X ";
                 }
 
                 byte[] out = response.getBytes(StandardCharsets.UTF_8);
@@ -389,11 +503,35 @@ public class Node implements NodeInterface {
         }
         return spaces + " " + s + " ";
     }
-    private java.util.HashMap<String, String> store = new java.util.HashMap<>();
 
-    private java.util.HashMap<String, String> nodeAddresses = new java.util.HashMap<>();
+    private boolean isResponsibleFor(String key) throws Exception {
 
-    private java.util.Stack<String> relayStack = new java.util.Stack<>();
+        byte[] keyHash = HashID.computeHashID(key);
+
+        int myDistance =
+                HashID.getDistance(
+                        HashID.computeHashID(nodeName),
+                        keyHash
+                );
+
+        int closer = 0;
+
+        for (String node : nodeAddresses.keySet()) {
+
+            int distance =
+                    HashID.getDistance(
+                            HashID.computeHashID(node),
+                            keyHash
+                    );
+
+            if (distance < myDistance) {
+                closer++;
+            }
+        }
+
+        return closer < 3;
+    }
+
 
 
     public boolean isActive(String nodeName) throws Exception {
@@ -470,14 +608,6 @@ public class Node implements NodeInterface {
             return;
         }
 
-        // take first relay
-        String relayNode = relayStack.firstElement();
-        String address = nodeAddresses.get(relayNode);
-
-        String[] parts = address.split(":");
-        String ip = parts[0];
-        int port = Integer.parseInt(parts[1]);
-
         String originalMessage = new String(
                 originalPacket.getData(),
                 0,
@@ -485,10 +615,63 @@ public class Node implements NodeInterface {
                 StandardCharsets.UTF_8
         );
 
-        // wrap message
-        String wrapped = "AA V " + encodeString(originalMessage);
+        String targetNode = null;
 
-        byte[] out = wrapped.getBytes(StandardCharsets.UTF_8);
+        for (String name : nodeAddresses.keySet()) {
+            String address = nodeAddresses.get(name);
+            String[] parts = address.split(":");
+
+            String ip = parts[0];
+            int port = Integer.parseInt(parts[1]);
+
+            if (originalPacket.getAddress().getHostAddress().equals(ip)
+                    && originalPacket.getPort() == port) {
+                targetNode = name;
+                break;
+            }
+        }
+
+        if (targetNode == null) {
+            socket.send(originalPacket);
+            return;
+        }
+
+        String messageToWrap = originalMessage;
+
+        for (int i = relayStack.size() - 1; i >= 0; i--) {
+            String relayTarget = targetNode;
+
+            if (i < relayStack.size() - 1) {
+                relayTarget = relayStack.get(i + 1);
+            }
+
+            if (!relayTarget.startsWith("N:")) {
+                relayTarget = "N:" + relayTarget;
+            }
+
+            String txid = messageToWrap.substring(0, 2);
+
+            messageToWrap = txid + " V " + encodeString(relayTarget) + messageToWrap;
+        }
+
+        String firstRelay = relayStack.firstElement();
+
+        if (!firstRelay.startsWith("N:")) {
+            firstRelay = "N:" + firstRelay;
+        }
+
+        String firstRelayAddress = nodeAddresses.get(firstRelay);
+
+        if (firstRelayAddress == null) {
+            socket.send(originalPacket);
+            return;
+        }
+
+        String[] parts = firstRelayAddress.split(":");
+        String ip = parts[0];
+        int port = Integer.parseInt(parts[1]);
+
+        byte[] out = messageToWrap.getBytes(StandardCharsets.UTF_8);
 
         DatagramPacket relayPacket = new DatagramPacket(
                 out,
@@ -509,58 +692,84 @@ public class Node implements NodeInterface {
             return false;
         }
 
-        String address = nodeAddresses.values().iterator().next();
-        String[] parts = address.split(":");
-        String ip = parts[0];
-        int port = Integer.parseInt(parts[1]);
+        learnNearest(key);
 
-        String txid = nextTxID();
-        String request = txid + " E " + encodeString(key);
+        for (String address : nodeAddresses.values()) {
+            if (address.equals(myAddress)) {
+                continue;
+            }
+            String[] parts = address.split(":");
+            String ip = parts[0];
+            int port = Integer.parseInt(parts[1]);
 
-        byte[] out = request.getBytes(StandardCharsets.UTF_8);
-        DatagramPacket packet = new DatagramPacket(
-                out,
-                out.length,
-                java.net.InetAddress.getByName(ip),
-                port
-        );
+            String txid = nextTxID();
+            String request = txid + " E " + encodeString(key);
 
-        byte[] buffer = new byte[4096];
-        DatagramPacket responsePacket = new DatagramPacket(buffer, buffer.length);
+            byte[] out = request.getBytes(StandardCharsets.UTF_8);
+            DatagramPacket packet = new DatagramPacket(
+                    out,
+                    out.length,
+                    java.net.InetAddress.getByName(ip),
+                    port
+            );
 
-        socket.setSoTimeout(5000);
+            socket.setSoTimeout(500);
 
-        for (int attempt = 0; attempt < 3; attempt++) {
-            System.out.println("Exists attempt: " + (attempt + 1));
-            socket.send(packet);
+            for (int attempt = 0; attempt < 3; attempt++) {
+                System.out.println("Exists attempt: " + (attempt + 1));
 
-            try {
-                socket.receive(responsePacket);
+                sendWithRelay(packet);
 
-                String response = new String(
-                        responsePacket.getData(),
-                        0,
-                        responsePacket.getLength(),
-                        StandardCharsets.UTF_8
-                );
+                long endTime = System.currentTimeMillis() + 5000;
 
-                System.out.println("Exists response: [" + response + "]");
+                while (System.currentTimeMillis() < endTime) {
+                    byte[] buffer = new byte[4096];
+                    DatagramPacket responsePacket =
+                            new DatagramPacket(buffer, buffer.length);
 
-                if (response.length() >= 6 &&
-                        response.substring(0, 2).equals(txid) &&
-                        response.substring(2, 5).equals(" F ")) {
+                    try {
+                        socket.receive(responsePacket);
+                    } catch (SocketTimeoutException e) {
+                        continue;
+                    }
 
-                    char code = response.charAt(5);
-                    return code == 'Y';
+                    String response = new String(
+                            responsePacket.getData(),
+                            0,
+                            responsePacket.getLength(),
+                            StandardCharsets.UTF_8
+                    );
+
+                    System.out.println("Exists response: [" + response + "]");
+
+                    if (!response.startsWith(txid)) {
+                        continue;
+                    }
+
+                    if (response.length() >= 6 &&
+                            response.substring(2, 5).equals(" F ")) {
+
+                        char code = response.charAt(5);
+
+                        if (code == 'Y') {
+                            return true;
+                        }
+
+                        if (code == 'N') {
+                            return false;
+                        }
+
+                        if (code == '?') {
+                            break;
+                        }
+                    }
                 }
-
-            } catch (SocketTimeoutException e) {
-                System.out.println("Exists timeout, retrying...");
             }
         }
 
         return false;
     }
+
     private String hashHex(String key) throws Exception {
         byte[] hash = HashID.computeHashID(key);
         StringBuilder sb = new StringBuilder();
@@ -570,6 +779,43 @@ public class Node implements NodeInterface {
         }
 
         return sb.toString();
+    }
+    private byte[] stringToBytes(String hex) {
+        byte[] bytes = new byte[hex.length() / 2];
+
+        for (int i = 0; i < hex.length(); i += 2) {
+            int first = Character.digit(hex.charAt(i), 16);
+            int second = Character.digit(hex.charAt(i + 1), 16);
+
+            bytes[i / 2] = (byte) ((first << 4) + second);
+        }
+
+        return bytes;
+    }
+    private java.util.List<String> sortNodes(String hash) throws Exception {
+
+        byte[] target = stringToBytes(hash);
+
+        java.util.ArrayList<String> nodes =
+                new java.util.ArrayList<>(nodeAddresses.keySet());
+
+        nodes.sort((a, b) -> {
+            try {
+
+                int distanceA =
+                        HashID.getDistance(HashID.computeHashID(a), target);
+
+                int distanceB =
+                        HashID.getDistance(HashID.computeHashID(b), target);
+
+                return Integer.compare(distanceA, distanceB);
+
+            } catch (Exception e) {
+                return 0;
+            }
+        });
+
+        return nodes;
     }
 
     private void learnNearest(String key) throws Exception {
@@ -601,7 +847,7 @@ public class Node implements NodeInterface {
 
             socket.setSoTimeout(500);
 
-            socket.send(packet);
+            sendWithRelay(packet);
 
             long endTime = System.currentTimeMillis() + 2000;
 
@@ -627,8 +873,8 @@ public class Node implements NodeInterface {
                     continue;
                 }
 
-                if (response.length() >= 4 &&
-                        response.substring(2, 4).equals(" O")) {
+                if (response.length() >= 5 &&
+                        response.substring(2, 5).equals(" O ")) {
 
                     int index = 5;
 
@@ -660,6 +906,9 @@ public class Node implements NodeInterface {
         learnNearest(key);
 
         for (String address : nodeAddresses.values()) {
+            if (address.equals(myAddress)) {
+                continue;
+            }
             String[] parts = address.split(":");
             String ip = parts[0];
             int port = Integer.parseInt(parts[1]);
@@ -729,6 +978,7 @@ public class Node implements NodeInterface {
 
 
     public boolean write(String key, String value) throws Exception {
+        handleIncomingMessages(100);
 
         // if it's a node address, store locally
         if (key.startsWith("N:")) {
@@ -745,7 +995,9 @@ public class Node implements NodeInterface {
         learnNearest(key);
 
         for (String address : nodeAddresses.values()) {
-
+            if (address.equals(myAddress)) {
+                continue;
+            }
             String[] parts = address.split(":");
             String ip = parts[0];
             int port = Integer.parseInt(parts[1]);
@@ -821,7 +1073,7 @@ public class Node implements NodeInterface {
 
         return false;
     }
-    
+
     private int txCounter = 0;
     private String nextTxID() {
         int id = txCounter++;
@@ -830,16 +1082,94 @@ public class Node implements NodeInterface {
         return "" + c1 + c2;
     }
     public boolean CAS(String key, String currentValue, String newValue) throws Exception {
-        if (store.containsKey(key)) {
-            if (store.get(key).equals(currentValue)) {
-                store.put(key, newValue);
-                return true;
-            } else {
+
+        if (nodeAddresses.isEmpty()) {
+            if (store.containsKey(key)) {
+                if (store.get(key).equals(currentValue)) {
+                    store.put(key, newValue);
+                    return true;
+                }
                 return false;
             }
-        } else {
+
             store.put(key, newValue);
             return true;
         }
+
+        learnNearest(key);
+
+        for (String address : nodeAddresses.values()) {
+            if (address.equals(myAddress)) {
+                continue;
+            }
+            String[] parts = address.split(":");
+            String ip = parts[0];
+            int port = Integer.parseInt(parts[1]);
+
+            String txid = nextTxID();
+
+            String request = txid + " C "
+                    + encodeString(key)
+                    + encodeString(currentValue)
+                    + encodeString(newValue);
+
+            byte[] out = request.getBytes(StandardCharsets.UTF_8);
+
+            DatagramPacket packet = new DatagramPacket(
+                    out,
+                    out.length,
+                    java.net.InetAddress.getByName(ip),
+                    port
+            );
+
+            socket.setSoTimeout(500);
+
+            for (int attempt = 0; attempt < 3; attempt++) {
+
+                sendWithRelay(packet);
+
+                long endTime = System.currentTimeMillis() + 5000;
+
+                while (System.currentTimeMillis() < endTime) {
+
+                    byte[] buffer = new byte[4096];
+                    DatagramPacket responsePacket =
+                            new DatagramPacket(buffer, buffer.length);
+
+                    try {
+                        socket.receive(responsePacket);
+                    } catch (SocketTimeoutException e) {
+                        continue;
+                    }
+
+                    String response = new String(
+                            responsePacket.getData(),
+                            0,
+                            responsePacket.getLength(),
+                            StandardCharsets.UTF_8
+                    );
+
+                    if (!response.startsWith(txid)) {
+                        continue;
+                    }
+
+                    if (response.length() >= 6 &&
+                            response.substring(2, 5).equals(" D ")) {
+
+                        char code = response.charAt(5);
+
+                        if (code == 'R' || code == 'A') {
+                            return true;
+                        }
+
+                        if (code == 'N' || code == 'X') {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+
+        return false;
     }
 }

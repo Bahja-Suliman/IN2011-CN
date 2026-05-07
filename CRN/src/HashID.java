@@ -14,4 +14,31 @@ public class HashID {
 	md.update(s.getBytes(StandardCharsets.UTF_8));
 	return md.digest();
     }
+    public static int getDistance(byte[] a, byte[] b) {
+
+        int matchingBits = 0;
+
+        for (int i = 0; i < a.length; i++) {
+
+            int xor = (a[i] ^ b[i]) & 0xff;
+
+            if (xor == 0) {
+
+                matchingBits += 8;
+
+            } else {
+
+                for (int bit = 7; bit >= 0; bit--) {
+
+                    if ((xor & (1 << bit)) == 0) {
+                        matchingBits++;
+                    } else {
+                        return 256 - matchingBits;
+                    }
+                }
+            }
+        }
+
+        return 0;
+    }
 }
