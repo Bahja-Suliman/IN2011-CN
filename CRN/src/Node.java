@@ -92,6 +92,7 @@ public class Node implements NodeInterface {
     private java.util.HashMap<String, String> store = new java.util.HashMap<>();
     private java.util.HashMap<String, String> nodeAddresses = new java.util.HashMap<>();
     private java.util.Stack<String> relayStack = new java.util.Stack<>();
+    private java.util.HashMap<String, String> responseCache = new java.util.HashMap<>();
     private String myAddress;
 
     public void setNodeName(String nodeName) throws Exception {
@@ -192,305 +193,327 @@ public class Node implements NodeInterface {
 
             System.out.println("Received: [" + message + "]");
 
-            if (message.length() >= 4 && message.substring(2, 4).equals(" E")) {
-                String txid = message.substring(0, 2);
+            String keyForCache = cacheKey(packet, message);
 
-                ParsedString keyPart = decodeString(message, 5);
-                String key = keyPart.value;
+            if (responseCache.containsKey(keyForCache)) {
+                String oldResponse = responseCache.get(keyForCache);
 
-                String response;
-                if (store.containsKey(key)) {
-                    response = txid + " F Y ";
-                } else if (isResponsibleFor(key)) {
-                    response = txid + " F N ";
-                } else {
-                    response = txid + " F ? ";
+                byte[] out = oldResponse.getBytes(StandardCharsets.UTF_8);
+
+                DatagramPacket reply = new DatagramPacket(
+                        out,
+                        out.length,
+                        packet.getAddress(),
+                        packet.getPort()
+                );
+
+                socket.send(reply);
+                continue;
+            }
+            try {
+
+                if (message.length() >= 4 && message.substring(2, 4).equals(" E")) {
+                    String txid = message.substring(0, 2);
+
+                    ParsedString keyPart = decodeString(message, 5);
+                    String key = keyPart.value;
+
+                    String response;
+                    if (store.containsKey(key)) {
+                        response = txid + " F Y ";
+                    } else if (isResponsibleFor(key)) {
+                        response = txid + " F N ";
+                    } else {
+                        response = txid + " F ? ";
+                    }
+
+                    byte[] out = response.getBytes(StandardCharsets.UTF_8);
+                    DatagramPacket reply = new DatagramPacket(
+                            out,
+                            out.length,
+                            packet.getAddress(),
+                            packet.getPort()
+                    );
+                    responseCache.put(keyForCache, response);
+                    socket.send(reply);
+
+                    System.out.println("E key: [" + key + "]");
+                    System.out.println("Sent: [" + response + "]");
                 }
 
-                byte[] out = response.getBytes(StandardCharsets.UTF_8);
-                DatagramPacket reply = new DatagramPacket(
-                        out,
-                        out.length,
-                        packet.getAddress(),
-                        packet.getPort()
-                );
+                if (message.length() >= 4 && message.substring(2, 4).equals(" G")) {
+                    String txid = message.substring(0, 2);
+                    String response = txid + " H " + encodeString(nodeName);
 
-                socket.send(reply);
+                    byte[] out = response.getBytes(StandardCharsets.UTF_8);
+                    DatagramPacket reply = new DatagramPacket(
+                            out,
+                            out.length,
+                            packet.getAddress(),
+                            packet.getPort()
+                    );
+                    responseCache.put(keyForCache, response);
+                    socket.send(reply);
 
-                System.out.println("E key: [" + key + "]");
-                System.out.println("Sent: [" + response + "]");
-            }
+                    System.out.println("Sent: [" + response + "]");
+                }
 
-            if (message.length() >= 4 && message.substring(2, 4).equals(" G")) {
-                String txid = message.substring(0, 2);
-                String response = txid + " H " + encodeString(nodeName);
+                if (message.length() >= 4 && message.substring(2, 4).equals(" W")) {
 
-                byte[] out = response.getBytes(StandardCharsets.UTF_8);
-                DatagramPacket reply = new DatagramPacket(
-                        out,
-                        out.length,
-                        packet.getAddress(),
-                        packet.getPort()
-                );
+                    String txid = message.substring(0, 2);
 
-                socket.send(reply);
+                    ParsedString keyPart = decodeString(message, 5);
+                    ParsedString valuePart = decodeString(message, keyPart.nextIndex);
 
-                System.out.println("Sent: [" + response + "]");
-            }
+                    String key = keyPart.value;
+                    String value = valuePart.value;
 
-            if (message.length() >= 4 && message.substring(2, 4).equals(" W")) {
+                    boolean replacing;
+                    String response;
 
-                String txid = message.substring(0, 2);
+                    if (!key.startsWith("D:") && !key.startsWith("N:")) {
 
-                ParsedString keyPart = decodeString(message, 5);
-                ParsedString valuePart = decodeString(message, keyPart.nextIndex);
+                        response = txid + " X X ";
 
-                String key = keyPart.value;
-                String value = valuePart.value;
+                    } else if (key.startsWith("N:")) {
 
-                boolean replacing;
-                String response;
+                        replacing = nodeAddresses.containsKey(key);
 
-                if (!key.startsWith("D:") && !key.startsWith("N:")) {
+                        nodeAddresses.put(key, value);
 
-                    response = txid + " X X ";
-
-                } else if (key.startsWith("N:")) {
-
-                    replacing = nodeAddresses.containsKey(key);
-
-                    nodeAddresses.put(key, value);
-
-                    response = txid + (replacing ? " X R " : " X A ");
-
-                } else {
-
-                    replacing = store.containsKey(key);
-                    if (replacing) {
-                        store.put(key, value);
-
-                        response = txid + " X R ";
-
-                    } else if (isResponsibleFor(key)) {
-
-                        store.put(key, value);
-
-                        response = txid + " X A ";
+                        response = txid + (replacing ? " X R " : " X A ");
 
                     } else {
 
-                        response = txid + " X X ";
+                        replacing = store.containsKey(key);
+                        if (replacing) {
+                            store.put(key, value);
+
+                            response = txid + " X R ";
+
+                        } else if (isResponsibleFor(key)) {
+
+                            store.put(key, value);
+
+                            response = txid + " X A ";
+
+                        } else {
+
+                            response = txid + " X X ";
+                        }
                     }
-                }
 
-                byte[] out = response.getBytes(StandardCharsets.UTF_8);
+                    byte[] out = response.getBytes(StandardCharsets.UTF_8);
 
-                DatagramPacket reply = new DatagramPacket(
-                        out,
-                        out.length,
-                        packet.getAddress(),
-                        packet.getPort()
-                );
-
-                socket.send(reply);
-
-                System.out.println("W key: [" + key + "]");
-                System.out.println("W value: [" + value + "]");
-                System.out.println("Sent: [" + response + "]");
-            }
-
-            if (message.length() >= 4 && message.substring(2, 4).equals(" R")) {
-                String txid = message.substring(0, 2);
-
-                ParsedString keyPart = decodeString(message, 5);
-                String key = keyPart.value;
-
-                String response;
-                if (store.containsKey(key)) {
-                    response = txid + " S Y " + encodeString(store.get(key));
-                } else if (isResponsibleFor(key)) {
-                    response = txid + " S N ";
-                } else {
-                    response = txid + " S ? ";
-                }
-
-                byte[] out = response.getBytes(StandardCharsets.UTF_8);
-                DatagramPacket reply = new DatagramPacket(
-                        out,
-                        out.length,
-                        packet.getAddress(),
-                        packet.getPort()
-                );
-
-                socket.send(reply);
-
-                System.out.println("R key: [" + key + "]");
-                System.out.println("Sent: [" + response + "]");
-            }
-
-            if (message.length() >= 4 && message.substring(2, 4).equals(" V")) {
-
-                String outerTxid = message.substring(0, 2);
-
-                ParsedString targetPart = decodeString(message, 5);
-
-                String targetNode = targetPart.value;
-
-                String innerMessage = message.substring(targetPart.nextIndex);
-
-                System.out.println("Relay target: [" + targetNode + "]");
-                System.out.println("Relaying: [" + innerMessage + "]");
-
-                String address = nodeAddresses.get(targetNode);
-
-                if (address == null) {
-                    continue;
-                }
-
-                String[] parts = address.split(":");
-
-                String ip = parts[0];
-                int port = Integer.parseInt(parts[1]);
-
-                byte[] out = innerMessage.getBytes(StandardCharsets.UTF_8);
-
-                DatagramPacket forward = new DatagramPacket(
-                        out,
-                        out.length,
-                        java.net.InetAddress.getByName(ip),
-                        port
-                );
-
-                socket.send(forward);
-
-                socket.setSoTimeout(5000);
-
-                try {
-
-                    byte[] responseBuffer = new byte[4096];
-
-                    DatagramPacket responsePacket =
-                            new DatagramPacket(responseBuffer, responseBuffer.length);
-
-                    socket.receive(responsePacket);
-
-                    String response = new String(
-                            responsePacket.getData(),
-                            0,
-                            responsePacket.getLength(),
-                            StandardCharsets.UTF_8
+                    DatagramPacket reply = new DatagramPacket(
+                            out,
+                            out.length,
+                            packet.getAddress(),
+                            packet.getPort()
                     );
+                    responseCache.put(keyForCache, response);
+                    socket.send(reply);
 
-                    if (response.length() >= 2) {
-
-                        String fixedResponse =
-                                outerTxid + response.substring(2);
-
-                        byte[] relayResponse =
-                                fixedResponse.getBytes(StandardCharsets.UTF_8);
-
-                        DatagramPacket back = new DatagramPacket(
-                                relayResponse,
-                                relayResponse.length,
-                                packet.getAddress(),
-                                packet.getPort()
-                        );
-
-                        socket.send(back);
-
-                        System.out.println("Relay response: [" + fixedResponse + "]");
-                    }
-
-                } catch (SocketTimeoutException e) {
-
-                    System.out.println("Relay timeout");
+                    System.out.println("W key: [" + key + "]");
+                    System.out.println("W value: [" + value + "]");
+                    System.out.println("Sent: [" + response + "]");
                 }
-            }
 
-            if (message.length() >= 4 && message.substring(2, 4).equals(" N")) {
-                String txid = message.substring(0, 2);
+                if (message.length() >= 4 && message.substring(2, 4).equals(" R")) {
+                    String txid = message.substring(0, 2);
 
-                String hash = message.substring(5).trim();
+                    ParsedString keyPart = decodeString(message, 5);
+                    String key = keyPart.value;
 
-                String response = txid + " O ";
-
-                int count = 0;
-
-                for (String node : sortNodes(hash)) {
-                    if (count >= 3) {
-                        break;
+                    String response;
+                    if (store.containsKey(key)) {
+                        response = txid + " S Y " + encodeString(store.get(key));
+                    } else if (isResponsibleFor(key)) {
+                        response = txid + " S N ";
+                    } else {
+                        response = txid + " S ? ";
                     }
 
-                    String address = nodeAddresses.get(node);
+                    byte[] out = response.getBytes(StandardCharsets.UTF_8);
+                    DatagramPacket reply = new DatagramPacket(
+                            out,
+                            out.length,
+                            packet.getAddress(),
+                            packet.getPort()
+                    );
+                    responseCache.put(keyForCache, response);
+                    socket.send(reply);
+
+                    System.out.println("R key: [" + key + "]");
+                    System.out.println("Sent: [" + response + "]");
+                }
+
+                if (message.length() >= 4 && message.substring(2, 4).equals(" V")) {
+
+                    String outerTxid = message.substring(0, 2);
+
+                    ParsedString targetPart = decodeString(message, 5);
+
+                    String targetNode = targetPart.value;
+
+                    String innerMessage = message.substring(targetPart.nextIndex);
+
+                    System.out.println("Relay target: [" + targetNode + "]");
+                    System.out.println("Relaying: [" + innerMessage + "]");
+
+                    String address = nodeAddresses.get(targetNode);
 
                     if (address == null) {
                         continue;
                     }
 
-                    response += encodeString(node);
-                    response += encodeString(address);
+                    String[] parts = address.split(":");
 
-                    count++;
-                }
+                    String ip = parts[0];
+                    int port = Integer.parseInt(parts[1]);
 
-                byte[] out = response.getBytes(StandardCharsets.UTF_8);
+                    byte[] out = innerMessage.getBytes(StandardCharsets.UTF_8);
 
-                DatagramPacket reply = new DatagramPacket(
-                        out,
-                        out.length,
-                        packet.getAddress(),
-                        packet.getPort()
-                );
+                    DatagramPacket forward = new DatagramPacket(
+                            out,
+                            out.length,
+                            java.net.InetAddress.getByName(ip),
+                            port
+                    );
 
-                socket.send(reply);
+                    socket.send(forward);
 
-                System.out.println("Sent nearest response: [" + response + "]");
-            }
+                    socket.setSoTimeout(5000);
 
-            if (message.length() >= 4 && message.substring(2, 4).equals(" C")) {
-                String txid = message.substring(0, 2);
+                    try {
 
-                ParsedString keyPart = decodeString(message, 5);
-                ParsedString currentPart = decodeString(message, keyPart.nextIndex);
-                ParsedString newPart = decodeString(message, currentPart.nextIndex);
+                        byte[] responseBuffer = new byte[4096];
 
-                String key = keyPart.value;
-                String currentValue = currentPart.value;
-                String newValue = newPart.value;
+                        DatagramPacket responsePacket =
+                                new DatagramPacket(responseBuffer, responseBuffer.length);
 
-                String response;
+                        socket.receive(responsePacket);
 
-                if (!key.startsWith("D:") && !key.startsWith("N:")) {
-                    response = txid + " D X ";
-                } else if (store.containsKey(key)) {
-                    if (store.get(key).equals(currentValue)) {
-                        store.put(key, newValue);
-                        response = txid + " D R ";
-                    } else {
-                        response = txid + " D N ";
+                        String response = new String(
+                                responsePacket.getData(),
+                                0,
+                                responsePacket.getLength(),
+                                StandardCharsets.UTF_8
+                        );
+
+                        if (response.length() >= 2) {
+
+                            String fixedResponse =
+                                    outerTxid + response.substring(2);
+
+                            byte[] relayResponse =
+                                    fixedResponse.getBytes(StandardCharsets.UTF_8);
+
+                            DatagramPacket back = new DatagramPacket(
+                                    relayResponse,
+                                    relayResponse.length,
+                                    packet.getAddress(),
+                                    packet.getPort()
+                            );
+
+                            socket.send(back);
+
+                            System.out.println("Relay response: [" + fixedResponse + "]");
+                        }
+
+                    } catch (SocketTimeoutException e) {
+
+                        System.out.println("Relay timeout");
                     }
-                } else if (isResponsibleFor(key)) {
-                    store.put(key, newValue);
-                    response = txid + " D A ";
-                } else {
-                    response = txid + " D X ";
                 }
 
-                byte[] out = response.getBytes(StandardCharsets.UTF_8);
-                DatagramPacket reply = new DatagramPacket(
-                        out,
-                        out.length,
-                        packet.getAddress(),
-                        packet.getPort()
-                );
+                if (message.length() >= 4 && message.substring(2, 4).equals(" N")) {
+                    String txid = message.substring(0, 2);
 
-                socket.send(reply);
+                    String hash = message.substring(5).trim();
 
-                System.out.println("CAS key: [" + key + "]");
-                System.out.println("Current: [" + currentValue + "]");
-                System.out.println("New: [" + newValue + "]");
-                System.out.println("Sent: [" + response + "]");
-            }
+                    String response = txid + " O ";
+
+                    int count = 0;
+
+                    for (String node : sortNodes(hash)) {
+                        if (count >= 3) {
+                            break;
+                        }
+
+                        String address = nodeAddresses.get(node);
+
+                        if (address == null) {
+                            continue;
+                        }
+
+                        response += encodeString(node);
+                        response += encodeString(address);
+
+                        count++;
+                    }
+
+                    byte[] out = response.getBytes(StandardCharsets.UTF_8);
+
+                    DatagramPacket reply = new DatagramPacket(
+                            out,
+                            out.length,
+                            packet.getAddress(),
+                            packet.getPort()
+                    );
+                    responseCache.put(keyForCache, response);
+                    socket.send(reply);
+
+                    System.out.println("Sent nearest response: [" + response + "]");
+                }
+
+                if (message.length() >= 4 && message.substring(2, 4).equals(" C")) {
+                    String txid = message.substring(0, 2);
+
+                    ParsedString keyPart = decodeString(message, 5);
+                    ParsedString currentPart = decodeString(message, keyPart.nextIndex);
+                    ParsedString newPart = decodeString(message, currentPart.nextIndex);
+
+                    String key = keyPart.value;
+                    String currentValue = currentPart.value;
+                    String newValue = newPart.value;
+
+                    String response;
+
+                    if (!key.startsWith("D:") && !key.startsWith("N:")) {
+                        response = txid + " D X ";
+                    } else if (store.containsKey(key)) {
+                        if (store.get(key).equals(currentValue)) {
+                            store.put(key, newValue);
+                            response = txid + " D R ";
+                        } else {
+                            response = txid + " D N ";
+                        }
+                    } else if (isResponsibleFor(key)) {
+                        store.put(key, newValue);
+                        response = txid + " D A ";
+                    } else {
+                        response = txid + " D X ";
+                    }
+
+                    byte[] out = response.getBytes(StandardCharsets.UTF_8);
+                    DatagramPacket reply = new DatagramPacket(
+                            out,
+                            out.length,
+                            packet.getAddress(),
+                            packet.getPort()
+                    );
+                    responseCache.put(keyForCache, response);
+                    socket.send(reply);
+
+                    System.out.println("CAS key: [" + key + "]");
+                    System.out.println("Current: [" + currentValue + "]");
+                    System.out.println("New: [" + newValue + "]");
+                    System.out.println("Sent: [" + response + "]");
+                }
+            } catch (Exception e) {
+            System.out.println("Bad packet ignored");
+        }
         }
     }
 
@@ -502,6 +525,9 @@ public class Node implements NodeInterface {
             }
         }
         return spaces + " " + s + " ";
+    }
+    private String cacheKey(DatagramPacket packet, String message) {
+        return packet.getAddress().getHostAddress() + ":" + packet.getPort() + "|" + message;
     }
 
     private boolean isResponsibleFor(String key) throws Exception {
