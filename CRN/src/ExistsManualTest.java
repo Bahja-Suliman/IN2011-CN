@@ -3,7 +3,7 @@ public class ExistsManualTest {
         Node node = new Node();
 
         node.setNodeName("N:bahja.exists.test");
-        node.openPort(20112);
+        node.openPort(20110);
 
         // Start another node locally to answer the E request
         Node node2 = new Node();
