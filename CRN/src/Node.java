@@ -359,16 +359,10 @@ public class Node implements NodeInterface {
                     String outerTxid = message.substring(0, 2);
 
                     ParsedString targetPart = decodeString(message, 5);
+
                     String targetNode = targetPart.value;
 
                     String innerMessage = message.substring(targetPart.nextIndex);
-
-                    if (innerMessage.length() < 4) {
-                        System.out.println("Malformed relay message");
-                        continue;
-                    }
-
-                    String innerTxid = innerMessage.substring(0, 2);
 
                     System.out.println("Relay target: [" + targetNode + "]");
                     System.out.println("Relaying: [" + innerMessage + "]");
@@ -376,11 +370,11 @@ public class Node implements NodeInterface {
                     String address = nodeAddresses.get(targetNode);
 
                     if (address == null) {
-                        System.out.println("Unknown relay target");
                         continue;
                     }
 
                     String[] parts = address.split(":");
+
                     String ip = parts[0];
                     int port = Integer.parseInt(parts[1]);
 
@@ -395,31 +389,28 @@ public class Node implements NodeInterface {
 
                     socket.send(forward);
 
-                    long endTime = System.currentTimeMillis() + 5000;
-                    socket.setSoTimeout(500);
+                    socket.setSoTimeout(5000);
 
-                    while (System.currentTimeMillis() < endTime) {
+                    try {
 
-                        try {
-                            byte[] responseBuffer = new byte[4096];
+                        byte[] responseBuffer = new byte[4096];
 
-                            DatagramPacket responsePacket =
-                                    new DatagramPacket(responseBuffer, responseBuffer.length);
+                        DatagramPacket responsePacket =
+                                new DatagramPacket(responseBuffer, responseBuffer.length);
 
-                            socket.receive(responsePacket);
+                        socket.receive(responsePacket);
 
-                            String response = new String(
-                                    responsePacket.getData(),
-                                    0,
-                                    responsePacket.getLength(),
-                                    StandardCharsets.UTF_8
-                            );
+                        String response = new String(
+                                responsePacket.getData(),
+                                0,
+                                responsePacket.getLength(),
+                                StandardCharsets.UTF_8
+                        );
 
-                            if (!response.startsWith(innerTxid)) {
-                                continue;
-                            }
+                        if (response.length() >= 2) {
 
-                            String fixedResponse = outerTxid + response.substring(2);
+                            String fixedResponse =
+                                    outerTxid + response.substring(2);
 
                             byte[] relayResponse =
                                     fixedResponse.getBytes(StandardCharsets.UTF_8);
@@ -431,15 +422,14 @@ public class Node implements NodeInterface {
                                     packet.getPort()
                             );
 
-                            responseCache.put(keyForCache, fixedResponse);
                             socket.send(back);
 
                             System.out.println("Relay response: [" + fixedResponse + "]");
-                            break;
-
-                        } catch (SocketTimeoutException e) {
-                            // keep waiting until endTime
                         }
+
+                    } catch (SocketTimeoutException e) {
+
+                        System.out.println("Relay timeout");
                     }
                 }
 
