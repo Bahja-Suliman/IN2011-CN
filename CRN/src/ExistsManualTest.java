@@ -1,21 +1,29 @@
 public class ExistsManualTest {
-
     public static void main(String[] args) throws Exception {
         Node node = new Node();
 
         node.setNodeName("N:bahja.exists.test");
         node.openPort(20112);
 
-        // Give it one known Azure test node address.
-        node.write("N:black", "10.200.51.19:20116");
-        node.write("N:magenta", "10.200.51.18:20116");
+        // Start another node locally to answer the E request
+        Node node2 = new Node();
+        node2.setNodeName("N:bahja.exists.answer");
+        node2.openPort(20113);
 
-        System.out.println("Testing existing key...");
-        boolean found = node.exists("D:jabberwocky0");
-        System.out.println("exists(D:jabberwocky0) = " + found);
+        node2.write("D:test-exists", "hello");
 
-        System.out.println("Testing missing key...");
-        boolean missing = node.exists("D:not-real-bahja-test");
-        System.out.println("exists(D:not-real-bahja-test) = " + missing);
+        node.write("N:bahja.exists.answer", "127.0.0.1:20113");
+
+        Thread t = new Thread(() -> {
+            try {
+                node2.handleIncomingMessages(0);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        });
+        t.start();
+
+        boolean found = node.exists("D:test-exists");
+        System.out.println("exists(D:test-exists) = " + found);
     }
 }
