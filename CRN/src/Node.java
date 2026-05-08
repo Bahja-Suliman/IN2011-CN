@@ -92,8 +92,14 @@ public class Node implements NodeInterface {
     private java.util.HashMap<String, String> store = new java.util.HashMap<>();
     private java.util.HashMap<String, String> nodeAddresses = new java.util.HashMap<>();
     private java.util.Stack<String> relayStack = new java.util.Stack<>();
-    private java.util.HashMap<String, String> responseCache = new java.util.HashMap<>();
     private String myAddress;
+
+    private java.util.LinkedHashMap<String, String> responseCache =
+            new java.util.LinkedHashMap<String, String>(600, 0.75f, true) {
+                protected boolean removeEldestEntry(java.util.Map.Entry<String, String> eldest) {
+                    return size() > 500;
+                }
+            };
 
     public void setNodeName(String nodeName) throws Exception {
         if (!nodeName.startsWith("N:")) {
